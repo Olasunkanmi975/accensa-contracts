@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use ed25519_dalek::{Signer, SigningKey};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{StellarAssetClient, TokenClient},
@@ -758,4 +759,178 @@ fn test_max_settleable_extremes() {
     assert_eq!(max_settleable(big, 5_000), Some(big + big / 2));
     assert_eq!(max_settleable(-1, 0), None);
     assert_eq!(max_settleable(1000, MAX_SLIPPAGE_BPS + 1), None);
+}
+
+// ── Domain-separated signatures (issue #416) ────────────────────────────────
+
+fn signing_key(n: u8) -> SigningKey {
+    SigningKey::from_bytes(&[n; 32])
+}
+
+fn pubkey_of(env: &Env, sk: &SigningKey) -> BytesN<32> {
+    BytesN::from_array(env, &sk.verifying_key().to_bytes())
+}
+
+fn sign_digest(env: &Env, sk: &SigningKey, digest: &BytesN<32>) -> BytesN<64> {
+    let sig = sk.sign(&digest.to_array());
+    BytesN::from_array(env, &sig.to_bytes())
+}
+
+/// The domain separator must differ across networks: a signature made on
+/// one network can never produce the same digest on another.
+#[test]
+fn test_domain_separator_changes_with_network() {
+    let (env, client, _admin, _buyer, _seller, _token) = setup();
+    let d1 = client.get_domain_separator();
+
+    env.ledger().set_network_id([9u8; 32]);
+    let d2 = client.get_domain_separator();
+
+    assert_ne!(d1, d2, "domain separator must bind the network id");
+}
+
+/// The digest covers the full authorization tuple: changing any field
+/// changes the digest a signer would have to produce.
+#[test]
+fn test_authorization_digest_binds_every_field() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+
+    let base = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &1000);
+
+    // Different cap.
+    let other_cap = client.get_authorization_digest(&p, &buyer, &recipient, &999, &1000);
+    // Different expiry.
+    let other_expiry = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &999);
+    // Different payment id.
+    let other_pid =
+        client.get_authorization_digest(&pid(&env, 2), &buyer, &recipient, &1000, &1000);
+    // Different recipient.
+    let other_recipient =
+        client.get_authorization_digest(&p, &buyer, &Address::generate(&env), &1000, &1000);
+
+    assert_ne!(base, other_cap);
+    assert_ne!(base, other_expiry);
+    assert_ne!(base, other_pid);
+    assert_ne!(base, other_recipient);
+}
+
+#[test]
+fn test_register_signer_and_get() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let sk = signing_key(7);
+    let pk = pubkey_of(&env, &sk);
+
+    assert_eq!(client.get_signer(&buyer), None);
+    client.register_signer(&buyer, &pk);
+    assert_eq!(client.get_signer(&buyer), Some(pk));
+}
+
+#[test]
+fn test_authorize_signed_unregistered_signer_fails() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+    let sig = BytesN::from_array(&env, &[0u8; 64]);
+
+    assert_eq!(
+        client.try_authorize_signed(&p, &buyer, &recipient, &1000, &1000, &sig),
+        Err(Ok(Error::SignerNotRegistered))
+    );
+}
+
+/// End-to-end happy path: register the key, sign the domain-separated
+/// digest, authorize — and the regular settle flow still works afterwards.
+#[test]
+fn test_authorize_signed_valid_signature_succeeds() {
+    let (env, client, _admin, buyer, _seller, token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+    let sk = signing_key(7);
+    let pk = pubkey_of(&env, &sk);
+
+    client.register_signer(&buyer, &pk);
+    let digest = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &1000);
+    let sig = sign_digest(&env, &sk, &digest);
+
+    client.authorize_signed(&p, &buyer, &recipient, &1000, &1000, &sig);
+    let record = client.get_authorization(&p).unwrap();
+    assert_eq!(record.cap, 1000);
+    assert_eq!(record.from, buyer);
+    assert_eq!(record.to, recipient);
+
+    env.ledger().with_mut(|li| li.sequence_number = 50);
+    client.settle(&p, &500);
+    let tc = TokenClient::new(&env, &token);
+    assert_eq!(tc.balance(&recipient), 500);
+}
+
+/// Signatures are network-bound: the *same* signature that verified before
+/// a network switch must be rejected afterwards, because the digest moved
+/// with the domain separator.
+#[test]
+fn test_authorize_signed_rejected_on_different_network() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+    let sk = signing_key(7);
+    let pk = pubkey_of(&env, &sk);
+
+    client.register_signer(&buyer, &pk);
+    let digest_before = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &1000);
+    let sig = sign_digest(&env, &sk, &digest_before);
+
+    // Simulate the same signed payload arriving on another network.
+    env.ledger().set_network_id([9u8; 32]);
+
+    let digest_after = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &1000);
+    assert_ne!(digest_before, digest_after, "digest must move with network");
+
+    // ed25519_verify traps on mismatch — the whole call errors out.
+    assert!(client
+        .try_authorize_signed(&p, &buyer, &recipient, &1000, &1000, &sig)
+        .is_err());
+    assert!(
+        client.get_authorization(&p).is_none(),
+        "no authorization may be recorded after a failed verification"
+    );
+}
+
+/// A signature produced by a key other than the registered one is rejected.
+#[test]
+fn test_authorize_signed_rejected_for_wrong_key() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+    let registered = signing_key(7);
+    let attacker = signing_key(8);
+
+    client.register_signer(&buyer, &pubkey_of(&env, &registered));
+    let digest = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &1000);
+    let sig = sign_digest(&env, &attacker, &digest);
+
+    assert!(client
+        .try_authorize_signed(&p, &buyer, &recipient, &1000, &1000, &sig)
+        .is_err());
+    assert!(client.get_authorization(&p).is_none());
+}
+
+/// The signature binds the exact signed tuple: a valid signature over
+/// `cap = 1000` does not authorize `cap = 999`.
+#[test]
+fn test_authorize_signed_rejected_when_cap_differs() {
+    let (env, client, _admin, buyer, _seller, _token) = setup();
+    let p = pid(&env, 1);
+    let recipient = Address::generate(&env);
+    let sk = signing_key(7);
+
+    client.register_signer(&buyer, &pubkey_of(&env, &sk));
+    let digest = client.get_authorization_digest(&p, &buyer, &recipient, &1000, &1000);
+    let sig = sign_digest(&env, &sk, &digest);
+
+    assert!(client
+        .try_authorize_signed(&p, &buyer, &recipient, &999, &1000, &sig)
+        .is_err());
+    assert!(client.get_authorization(&p).is_none());
 }

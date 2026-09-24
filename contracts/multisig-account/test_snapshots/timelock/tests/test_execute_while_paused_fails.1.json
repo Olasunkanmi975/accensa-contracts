@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 4,
+    "address": 3,
     "nonce": 0,
     "mux_id": 0
   },
@@ -57,21 +57,46 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
+                "map": [
                   {
-                    "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                    "key": {
+                      "symbol": "approval_count"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
                   },
                   {
-                    "u32": 10
+                    "key": {
+                      "symbol": "call_hash"
+                    },
+                    "val": {
+                      "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                    }
                   },
                   {
-                    "u32": 1
+                    "key": {
+                      "symbol": "execution_ledger"
+                    },
+                    "val": {
+                      "u32": 10
+                    }
                   },
                   {
-                    "u32": 1
+                    "key": {
+                      "symbol": "guardian"
+                    },
+                    "val": {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    }
                   },
                   {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                    "key": {
+                      "symbol": "required_approvals"
+                    },
+                    "val": {
+                      "u32": 1
+                    }
                   }
                 ]
               }
@@ -122,7 +147,7 @@
                     "u64": "1"
                   },
                   {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                   }
                 ]
               },

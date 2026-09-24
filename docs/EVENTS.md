@@ -96,6 +96,15 @@ between consecutive anchors via `set_min_anchor_interval(interval)`.
 
 ---
 
+### `ReceiptLeafInsertedEvent`
+Emitted when `insert_receipt_leaf` appends a receipt to the continuous-anchoring
+incremental Merkle tree (issue #424).
+
+- **Topics**: `("receipt_leaf_inserted_event", leaf_index: u64)`
+- **Data Map**:
+  - `leaf` (`BytesN<32>`): The appended leaf hash.
+  - `root` (`BytesN<32>`): The tree root after the insertion (same sorted-pair, duplicate-odd-node convention as batch roots).
+
 ## `RefundVault` Events
 
 ### 7. `DepositEvent`
@@ -190,11 +199,21 @@ time-window-based refunds.
 The `feed_id` is the feed of the policy that was in force, captured before it
 was removed, so a reader can correlate the clear with the preceding set event.
 
+### 16. `DustSweptEvent`
+Emitted when `sweep_dust` recovers the unrefunded remainder of a closed escrow
+(strictly below the dust threshold, closed for more than ~90 days) and deletes
+its refund record.
+
+- **Topics**: `("dust_swept_event", payment_ref: BytesN<32>)`
+- **Data Map**:
+  - `amount` (`i128`): The residual transferred to the treasury. `0` when the payment was fully refunded and the record was only reclaimed.
+  - `treasury` (`Address`): The address that received the dust.
+
 ---
 
 ## `MultisigAccount` Events
 
-### 16. `PausedEvent`
+### 17. `PausedEvent`
 Emitted when the account's emergency pause is engaged, by the account itself
 (`threshold` signers) or by its security guardian. While paused the account
 refuses to authorize any call except its own `pause`, `unpause`,
@@ -204,7 +223,7 @@ refuses to authorize any call except its own `pause`, `unpause`,
 - **Data Map**:
   - `by` (`Address`): The account's own address (threshold signers) or the guardian.
 
-### 17. `UnpausedEvent`
+### 18. `UnpausedEvent`
 Emitted when the account's emergency pause is lifted.
 
 - **Topics**: `("unpaused_event", ledger: u32)`
@@ -213,7 +232,7 @@ Emitted when the account's emergency pause is lifted.
 
 The account is paused between a `paused_event` and the next `unpaused_event`.
 
-### 18. `GuardianSetEvent`
+### 19. `GuardianSetEvent`
 Emitted when the account's threshold signers set, replace or clear the security
 guardian.
 

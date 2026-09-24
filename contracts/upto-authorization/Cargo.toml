@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+ed25519-dalek = "3.0"
 proptest = "1.4"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

@@ -21,11 +21,10 @@
 #![no_std]
 
 mod admin;
+pub mod crypto;
 mod errors;
 mod signers;
-// Not yet exposed through an entrypoint; kept compiled so it stays in sync.
-#[allow(dead_code)]
-mod timelock;
+pub mod timelock;
 
 pub use admin::{GuardianSetEvent, PausedEvent, UnpausedEvent};
 pub use errors::Error;
@@ -41,7 +40,8 @@ pub mod testutils;
 mod test;
 
 use soroban_sdk::{
-    auth::CustomAccountInterface, contract, contractimpl, contracttype, Address, Env, Vec,
+    auth::CustomAccountInterface, contract, contractimpl, contracttype, Address, Bytes, BytesN,
+    Env, Vec,
 };
 
 #[contracttype]
@@ -123,6 +123,21 @@ impl MultisigAccount {
         new_threshold: u32,
     ) -> Result<(), Error> {
         signers::rotate_signers_and_threshold(&env, to_add, to_remove, new_threshold)
+    }
+
+    /// Verify an Ed25519 `signature` by `public_key` over `message`,
+    /// rejecting malleable encodings.
+    ///
+    /// Returns [`Error::NonCanonicalSignature`] if the signature's `s` scalar
+    /// is not reduced modulo the group order; otherwise defers to the host's
+    /// `ed25519_verify`, which traps on an invalid signature.
+    pub fn verify_ed25519(
+        env: Env,
+        public_key: BytesN<32>,
+        message: Bytes,
+        signature: BytesN<64>,
+    ) -> Result<(), Error> {
+        crypto::verify_ed25519_canonical(&env, &public_key, &message, &signature)
     }
 
     /// Engage the emergency pause. While paused, `__check_auth` refuses every

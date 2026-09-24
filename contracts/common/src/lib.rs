@@ -157,6 +157,9 @@ pub enum Error {
     InsufficientChannelBalance = 407,
     /// The timeout has already passed; the channel is expired.
     ChannelExpired = 408,
+    /// A multi-asset state names a token the channel does not escrow, or
+    /// omits one it does (issue #423).
+    UnsupportedAsset = 409,
     /// A policy that requires the stateless policy contracts (time/VDF) was
     /// proposed or executed on a vault that was never wired with the contract
     /// addresses (issue #129: the factory wires them at construction, or the
@@ -278,3 +281,4 @@ pub mod audit;
 pub mod blacklist;
 pub mod math;
 pub mod nonce;
+pub mod storage;

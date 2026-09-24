@@ -1,11 +1,15 @@
 #![no_std]
 
 #[cfg(test)]
+mod multi_asset_test;
+#[cfg(test)]
 mod test;
 
 use accensa_common::Error;
+use multi_asset::{MultiAssetChannel, MultiAssetState};
 use soroban_sdk::{
     contract, contractevent, contractimpl, contractmeta, contracttype, Address, Bytes, BytesN, Env,
+    Map,
 };
 
 contractmeta!(key = "name", val = "StateChannel");
@@ -57,6 +61,10 @@ pub struct Channel {
     pub challenge_period: u32,
     /// Ed25519 public key used to verify off-chain state signatures.
     pub sender_pubkey: BytesN<32>,
+    /// Sliding-window bitmap of consumed nonces (issue #374). Accepts
+    /// in-window nonces exactly once, in any order, and rejects replays
+    /// even after the window has slid past them.
+    pub nonce_window: NonceWindow,
 }
 
 /// A signed state update submitted by anyone.
@@ -78,6 +86,9 @@ pub enum DataKey {
     Token,
     /// Maximum number of ledgers a channel can stay open before it expires.
     MaxChannelLifetime,
+    /// Persistent: a multi-asset channel (issue #423). Shares the
+    /// `ChannelCount` id sequence with single-asset channels.
+    MultiAssetChannel(u64),
 }
 
 /// Emitted when a channel is opened.
@@ -159,6 +170,15 @@ const DEFAULT_MAX_CHANNEL_LIFETIME: u32 = 1_209_600;
 const TTL_EXTEND: u32 = 518_400;
 const TTL_THRESHOLD: u32 = 100;
 
+/// `0` selects the default challenge period; anything larger is capped.
+fn effective_challenge_period(challenge_period: u32) -> u32 {
+    if challenge_period == 0 {
+        DEFAULT_CHALLENGE_PERIOD
+    } else {
+        challenge_period.min(MAX_CHALLENGE_PERIOD)
+    }
+}
+
 #[contract]
 pub struct StateChannel;
 
@@ -174,9 +194,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::MaxChannelLifetime, &DEFAULT_MAX_CHANNEL_LIFETIME);
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
         Ok(())
     }
 
@@ -215,11 +233,7 @@ impl StateChannel {
             .unwrap_or(0)
             + 1;
 
-        let effective_challenge = if challenge_period == 0 {
-            DEFAULT_CHALLENGE_PERIOD
-        } else {
-            challenge_period.min(MAX_CHALLENGE_PERIOD)
-        };
+        let effective_challenge = effective_challenge_period(challenge_period);
 
         let channel = Channel {
             sender: sender.clone(),
@@ -233,6 +247,7 @@ impl StateChannel {
             disputed_at: 0,
             challenge_period: effective_challenge,
             sender_pubkey,
+            nonce_window: NonceWindow::empty(&env),
         };
 
         env.storage()
@@ -241,9 +256,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::ChannelCount, &channel_id);
-        env.storage()
-            .instance()
-            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         ChannelOpenedEvent {
             channel_id,
@@ -272,20 +285,25 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.nonce <= channel.nonce {
-            return Err(Error::StaleState);
-        }
-
         if state.balance < 0 || state.balance > channel.amount {
             return Err(Error::ExceedsPayment);
         }
+        // The receiver's entitlement may only grow: a signed state that
+        // regresses the balance is stale even when its nonce is fresh.
+        if state.balance < channel.balance {
+            return Err(Error::StaleState);
+        }
+        // Consume the nonce in the sliding window; a replay or a nonce that
+        // already slid out of range is rejected here (issue #374).
+        channel.nonce_window.consume(&env, state.nonce)?;
 
-        channel.nonce = state.nonce;
+        channel.nonce = channel.nonce.max(state.nonce);
         channel.balance = state.balance;
 
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         StateUpdatedEvent {
             channel_id,
@@ -325,7 +343,14 @@ impl StateChannel {
             return Err(Error::ExceedsPayment);
         }
 
-        channel.nonce = state.nonce;
+        // A cooperative close is signed by the sender, so its nonce need not
+        // beat `channel.nonce` — but it must never lower the recorded
+        // high-water mark, and its nonce is consumed best-effort: reusing an
+        // already-consumed nonce at close time is tolerated (the sender may
+        // co-sign a close with the last submitted state), while a fresh one
+        // joins the window so it cannot be replayed later.
+        let _ = channel.nonce_window.consume(&env, state.nonce);
+        channel.nonce = channel.nonce.max(state.nonce);
         channel.balance = state.balance;
         channel.phase = ChannelPhase::Closed;
         channel.closed_at = env.ledger().sequence();
@@ -333,6 +358,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         ChannelClosedEvent {
             channel_id,
@@ -367,15 +393,16 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.nonce <= channel.nonce {
-            return Err(Error::StaleState);
-        }
-
         if state.balance < 0 || state.balance > channel.amount {
             return Err(Error::ExceedsPayment);
         }
+        // Disputed state must not regress the recorded balance (issue #374).
+        if state.balance < channel.balance {
+            return Err(Error::StaleState);
+        }
+        channel.nonce_window.consume(&env, state.nonce)?;
 
-        channel.nonce = state.nonce;
+        channel.nonce = channel.nonce.max(state.nonce);
         channel.balance = state.balance;
         channel.phase = ChannelPhase::Disputed;
         channel.disputed_at = env.ledger().sequence();
@@ -383,6 +410,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         DisputeEvent {
             channel_id,
@@ -416,21 +444,23 @@ impl StateChannel {
 
         Self::verify_state_signature(&env, &channel, &state, &signature)?;
 
-        if state.nonce <= channel.nonce {
-            return Err(Error::StaleState);
-        }
-
         if state.balance < 0 || state.balance > channel.amount {
             return Err(Error::ExceedsPayment);
         }
+        // Counter-evidence must advance the balance, not regress it.
+        if state.balance < channel.balance {
+            return Err(Error::StaleState);
+        }
+        channel.nonce_window.consume(&env, state.nonce)?;
 
-        channel.nonce = state.nonce;
+        channel.nonce = channel.nonce.max(state.nonce);
         channel.balance = state.balance;
         channel.disputed_at = env.ledger().sequence();
 
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         StateUpdatedEvent {
             channel_id,
@@ -479,6 +509,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         DisputeFinalizedEvent {
             channel_id,
@@ -525,6 +556,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         ClaimEvent {
             channel_id,
@@ -567,6 +599,7 @@ impl StateChannel {
         env.storage()
             .instance()
             .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
 
         if refund > 0 {
             let contract_addr = env.current_contract_address();
@@ -583,6 +616,13 @@ impl StateChannel {
     /// Read a channel record.
     pub fn get_channel(env: Env, channel_id: u64) -> Result<Channel, Error> {
         Self::get_channel_internal(&env, channel_id)
+    }
+
+    /// Read-only: the channel's current sliding-window nonce bitmap
+    /// (issue #374). Useful for indexers reconstructing which nonces inside
+    /// the live window have already been consumed.
+    pub fn get_nonce_window(env: Env, channel_id: u64) -> Result<NonceWindow, Error> {
+        Ok(Self::get_channel_internal(&env, channel_id)?.nonce_window)
     }
 
     /// Returns the total number of channels opened.
@@ -617,6 +657,61 @@ impl StateChannel {
             .instance()
             .get(&DataKey::MaxChannelLifetime)
             .unwrap_or(DEFAULT_MAX_CHANNEL_LIFETIME)
+    }
+
+    // ── Multi-asset channels (issue #423) ────────────────────────────────
+
+    /// Open a channel escrowing several tokens at once. `deposits` maps each
+    /// token address to the amount `sender` locks in it (1..=`MAX_ASSETS`
+    /// tokens, every amount positive). See [`multi_asset`].
+    pub fn open_multi_asset_channel(
+        env: Env,
+        sender: Address,
+        receiver: Address,
+        sender_pubkey: BytesN<32>,
+        deposits: Map<Address, i128>,
+        challenge_period: u32,
+    ) -> Result<u64, Error> {
+        multi_asset::open(
+            &env,
+            sender,
+            receiver,
+            sender_pubkey,
+            deposits,
+            challenge_period,
+        )
+    }
+
+    /// Submit a newer sender-signed multi-asset state, while the channel is
+    /// open or during the post-close challenge window.
+    pub fn update_multi_asset_state(
+        env: Env,
+        channel_id: u64,
+        state: MultiAssetState,
+        signature: BytesN<64>,
+    ) -> Result<(), Error> {
+        multi_asset::update(&env, channel_id, state, signature)
+    }
+
+    /// Close a multi-asset channel with a signed state and start the
+    /// challenge window.
+    pub fn close_multi_asset_channel(
+        env: Env,
+        channel_id: u64,
+        state: MultiAssetState,
+        signature: BytesN<64>,
+    ) -> Result<(), Error> {
+        multi_asset::close(&env, channel_id, state, signature)
+    }
+
+    /// Settle every asset of a multi-asset channel in one atomic call.
+    pub fn settle_multi_asset_channel(env: Env, channel_id: u64) -> Result<(), Error> {
+        multi_asset::settle(&env, channel_id)
+    }
+
+    /// Read a multi-asset channel record.
+    pub fn get_multi_asset_channel(env: Env, channel_id: u64) -> Result<MultiAssetChannel, Error> {
+        multi_asset::get(&env, channel_id)
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
@@ -662,6 +757,7 @@ impl StateChannel {
 }
 pub mod dispute;
 pub mod epoch;
+pub mod multi_asset;
 
 /// HTLC parameters for cross-chain swaps.
 #[contracttype]

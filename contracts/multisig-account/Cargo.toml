@@ -15,3 +15,4 @@ testutils = ["soroban-sdk/testutils"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+ed25519-dalek = "3.0"

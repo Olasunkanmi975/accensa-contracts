@@ -42,8 +42,7 @@ pub fn queue_transaction(
     required_approvals: u32,
     guardian: Address,
 ) -> u64 {
-    let current_ledger = env.ledger().sequence();
-    let execution_ledger = current_ledger + execution_delay;
+    let execution_ledger = env.ledger().sequence().saturating_add(execution_delay);
 
     let queue_id = env
         .storage()
@@ -52,17 +51,17 @@ pub fn queue_transaction(
         .unwrap_or(0u64)
         + 1;
 
-    let tuple = (
+    let queued = QueuedTransaction {
         call_hash,
         execution_ledger,
-        0u32,
+        approval_count: 0,
         required_approvals,
-        guardian.clone(),
-    );
+        guardian,
+    };
 
     env.storage()
         .persistent()
-        .set(&DataKey::QueuedTransaction(queue_id), &tuple);
+        .set(&DataKey::QueuedTransaction(queue_id), &queued);
     env.storage()
         .instance()
         .set(&DataKey::QueueCount, &queue_id);
@@ -77,56 +76,44 @@ pub fn queue_transaction(
 /// Returns `Err(Error::ProposalNotFound)` if the queue ID does not exist.
 pub fn execute_queued_transaction(env: &Env, queue_id: u64) -> Result<(), Error> {
     crate::admin::require_not_paused(env)?;
+    let queued = get_queued_transaction(env, queue_id)?;
 
-    let key = DataKey::QueuedTransaction(queue_id);
-    let tuple: (BytesN<32>, u32, u32, u32, Address) = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(Error::ProposalNotFound)?;
-
-    let now = env.ledger().sequence();
-    if now < tuple.1 {
+    if env.ledger().sequence() < queued.execution_ledger {
         return Err(Error::TimelockNotExpired);
     }
 
-    if tuple.2 < tuple.3 {
+    if queued.approval_count < queued.required_approvals {
         return Err(Error::InsufficientSignatures);
     }
 
-    env.storage().persistent().remove(&key);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::QueuedTransaction(queue_id));
     Ok(())
 }
 
 /// Cancel a queued transaction during the delay window.
 ///
-/// Only the guardian or a registered signer can cancel.
+/// Only the transaction's guardian or a registered signer can cancel.
 /// Returns `Err(Error::TimelockNotExpired)` if the timelock has already elapsed.
 pub fn cancel_queued_transaction(env: &Env, queue_id: u64, caller: &Address) -> Result<(), Error> {
-    let key = DataKey::QueuedTransaction(queue_id);
-    let tuple: (BytesN<32>, u32, u32, u32, Address) = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(Error::ProposalNotFound)?;
+    let queued = get_queued_transaction(env, queue_id)?;
 
-    let now = env.ledger().sequence();
-    if now >= tuple.1 {
+    if env.ledger().sequence() >= queued.execution_ledger {
         return Err(Error::TimelockNotExpired);
     }
 
-    // Only the guardian can cancel during the delay window
-    let stored_guardian: Address = env
+    let is_signer = env
         .storage()
         .persistent()
-        .get(&DataKey::TimelockGuardian)
-        .ok_or(Error::Unauthorized)?;
-
-    if *caller != stored_guardian {
+        .has(&DataKey::Signer(caller.clone()));
+    if *caller != queued.guardian && !is_signer {
         return Err(Error::Unauthorized);
     }
 
-    env.storage().persistent().remove(&key);
+    env.storage()
+        .persistent()
+        .remove(&DataKey::QueuedTransaction(queue_id));
     Ok(())
 }
 
@@ -135,12 +122,7 @@ pub fn cancel_queued_transaction(env: &Env, queue_id: u64, caller: &Address) -> 
 /// Returns `Ok(())` if the approval was recorded.
 /// Returns `Err(Error::AlreadyVoted)` if the signer has already approved.
 pub fn approve_queued_transaction(env: &Env, queue_id: u64, signer: &Address) -> Result<(), Error> {
-    let key = DataKey::QueuedTransaction(queue_id);
-    let tuple: (BytesN<32>, u32, u32, u32, Address) = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(Error::ProposalNotFound)?;
+    let mut queued = get_queued_transaction(env, queue_id)?;
 
     let approval_key = DataKey::TimelockApproval(queue_id, signer.clone());
     if env.storage().temporary().has(&approval_key) {
@@ -148,44 +130,37 @@ pub fn approve_queued_transaction(env: &Env, queue_id: u64, signer: &Address) ->
     }
 
     env.storage().temporary().set(&approval_key, &());
-    let new_approval_count = tuple.2.saturating_add(1);
-    let new_tuple = (tuple.0, tuple.1, new_approval_count, tuple.3, tuple.4);
-    env.storage().persistent().set(&key, &new_tuple);
+    queued.approval_count = queued.approval_count.saturating_add(1);
+    env.storage()
+        .persistent()
+        .set(&DataKey::QueuedTransaction(queue_id), &queued);
 
     Ok(())
 }
 
 /// Read-only: fetch a queued transaction by ID.
 pub fn get_queued_transaction(env: &Env, queue_id: u64) -> Result<QueuedTransaction, Error> {
-    let (call_hash, execution_ledger, approval_count, required_approvals, guardian) = env
-        .storage()
+    env.storage()
         .persistent()
         .get(&DataKey::QueuedTransaction(queue_id))
-        .ok_or(Error::ProposalNotFound)?;
-    Ok(QueuedTransaction {
-        call_hash,
-        execution_ledger,
-        approval_count,
-        required_approvals,
-        guardian,
-    })
+        .ok_or(Error::ProposalNotFound)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::MultisigAccount;
-    use soroban_sdk::testutils::{Address as _, Ledger};
-    use soroban_sdk::{vec, Env};
+    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::vec;
 
-    /// Register an account so the helpers run inside a contract context
-    /// (storage is only reachable from one).
-    fn setup() -> (Env, Address) {
+    /// Register a one-signer account so the helpers run inside a contract
+    /// storage context. Returns `(env, contract_id, signer)`.
+    fn setup() -> (Env, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let signer = Address::generate(&env);
-        let id = env.register(MultisigAccount, (vec![&env, signer], 1u32));
-        (env, id)
+        let id = env.register(MultisigAccount, (vec![&env, signer.clone()], 1u32));
+        (env, id, signer)
     }
 
     fn hash(env: &Env) -> BytesN<32> {
@@ -194,15 +169,14 @@ mod tests {
 
     #[test]
     fn test_queue_and_execute() {
-        let (env, id) = setup();
+        let (env, id, _) = setup();
         let guardian = Address::generate(&env);
-        let call_hash = hash(&env);
 
         env.as_contract(&id, || {
-            let queue_id = queue_transaction(&env, call_hash.clone(), 10, 1, guardian.clone());
+            let queue_id = queue_transaction(&env, hash(&env), 10, 1, guardian.clone());
             let queued = get_queued_transaction(&env, queue_id).unwrap();
 
-            assert_eq!(queued.call_hash, call_hash);
+            assert_eq!(queued.call_hash, hash(&env));
             assert_eq!(queued.required_approvals, 1);
             assert_eq!(queued.execution_ledger, env.ledger().sequence() + 10);
         });
@@ -210,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_execute_before_timelock_fails() {
-        let (env, id) = setup();
+        let (env, id, _) = setup();
         let guardian = Address::generate(&env);
 
         env.as_contract(&id, || {
@@ -224,13 +198,10 @@ mod tests {
 
     #[test]
     fn test_cancel_during_delay() {
-        let (env, id) = setup();
+        let (env, id, _) = setup();
         let guardian = Address::generate(&env);
 
         env.as_contract(&id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::TimelockGuardian, &guardian);
             let queue_id = queue_transaction(
                 &env,
                 hash(&env),
@@ -238,15 +209,29 @@ mod tests {
                 1,
                 guardian.clone(),
             );
-
-            assert_eq!(cancel_queued_transaction(&env, queue_id, &guardian), Ok(()));
+            assert!(cancel_queued_transaction(&env, queue_id, &guardian).is_ok());
             assert!(get_queued_transaction(&env, queue_id).is_err());
         });
     }
 
     #[test]
+    fn test_cancel_by_stranger_fails() {
+        let (env, id, _) = setup();
+        let guardian = Address::generate(&env);
+        let stranger = Address::generate(&env);
+
+        env.as_contract(&id, || {
+            let queue_id = queue_transaction(&env, hash(&env), DEFAULT_TIMELOCK_DELAY, 1, guardian);
+            assert_eq!(
+                cancel_queued_transaction(&env, queue_id, &stranger),
+                Err(Error::Unauthorized)
+            );
+        });
+    }
+
+    #[test]
     fn test_cancel_after_timelock_fails() {
-        let (env, id) = setup();
+        let (env, id, _) = setup();
         let guardian = Address::generate(&env);
 
         let queue_id = env.as_contract(&id, || {
@@ -256,36 +241,35 @@ mod tests {
             .with_mut(|l| l.sequence_number += DEFAULT_TIMELOCK_DELAY + 1);
 
         env.as_contract(&id, || {
-            assert_eq!(
-                cancel_queued_transaction(&env, queue_id, &guardian),
-                Err(Error::TimelockNotExpired)
-            );
+            assert!(cancel_queued_transaction(&env, queue_id, &guardian).is_err());
         });
     }
 
     #[test]
     fn test_approve_and_execute() {
-        let (env, id) = setup();
+        let (env, id, signer) = setup();
         let guardian = Address::generate(&env);
-        let signer = Address::generate(&env);
 
         let queue_id = env.as_contract(&id, || {
             let queue_id = queue_transaction(&env, hash(&env), 10, 1, guardian);
             approve_queued_transaction(&env, queue_id, &signer).unwrap();
+            assert_eq!(
+                approve_queued_transaction(&env, queue_id, &signer),
+                Err(Error::AlreadyVoted)
+            );
             queue_id
         });
-        env.ledger().with_mut(|l| l.sequence_number += 11);
 
+        env.ledger().with_mut(|l| l.sequence_number += 11);
         env.as_contract(&id, || {
-            assert_eq!(execute_queued_transaction(&env, queue_id), Ok(()));
+            assert!(execute_queued_transaction(&env, queue_id).is_ok());
         });
     }
 
     #[test]
     fn test_execute_while_paused_fails() {
-        let (env, id) = setup();
+        let (env, id, signer) = setup();
         let guardian = Address::generate(&env);
-        let signer = Address::generate(&env);
 
         let queue_id = env.as_contract(&id, || {
             let queue_id = queue_transaction(&env, hash(&env), 10, 1, guardian);

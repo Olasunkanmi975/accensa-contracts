@@ -15,7 +15,10 @@ pub enum Error {
     ProposalNotFound = 5,
     /// The signer has already approved this transaction.
     AlreadyVoted = 6,
+    /// An Ed25519 signature's `s` scalar is not canonical (`s >= L`), i.e.
+    /// it is a malleated form of some other valid signature.
+    NonCanonicalSignature = 7,
     /// The account is paused: it will not authorize or execute any operation
     /// other than the pause controls and signer rotation.
-    Paused = 7,
+    Paused = 8,
 }

@@ -1132,6 +1132,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "multisig-account"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 3.0.0",
  "soroban-sdk",
 ]
 
@@ -2222,6 +2223,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 name = "upto-authorization"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 3.0.0",
  "proptest",
  "soroban-sdk",
 ]

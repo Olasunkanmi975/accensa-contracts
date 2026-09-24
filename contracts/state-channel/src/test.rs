@@ -863,3 +863,188 @@ fn test_config_getters() {
         DEFAULT_MAX_CHANNEL_LIFETIME
     );
 }
+
+// ── Bitmap nonce window (issue #374) ─────────────────────────────────────────
+
+/// Out-of-order arrival: nonce 5 lands before 3, both with a non-regressing
+/// balance — previously the strict `nonce <= channel.nonce` check rejected
+/// the late sibling; the bitmap window accepts each nonce exactly once.
+#[test]
+fn test_out_of_order_nonce_arrival_accepted() {
+    let (env, sender, receiver, _token, sk) = setup();
+    let contract = env.register(StateChannel, ());
+    let client = StateChannelClient::new(&env, &contract);
+    client.initialize(&_token);
+
+    let pk = pubkey_from_signing_key(&env, &sk);
+    let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+    let state5 = StateUpdate {
+        nonce: 5,
+        balance: 100,
+    };
+    let sig5 = sign_state(&env, &sk, &pk, &state5);
+    client.update_state(&channel_id, &state5, &sig5);
+
+    // Nonce 3 arrives afterwards: fresh bit, balance grows — accepted.
+    let state3 = StateUpdate {
+        nonce: 3,
+        balance: 200,
+    };
+    let sig3 = sign_state(&env, &sk, &pk, &state3);
+    client.update_state(&channel_id, &state3, &sig3);
+
+    let ch = client.get_channel(&channel_id);
+    assert_eq!(ch.balance, 200);
+    // The high-water mark keeps the highest nonce ever consumed.
+    assert_eq!(ch.nonce, 5);
+
+    let window = client.get_nonce_window(&channel_id);
+    assert_eq!(window.base, 0);
+    assert!(window.is_consumed(3));
+    assert!(window.is_consumed(5));
+    assert!(!window.is_consumed(4));
+}
+/// Replay: after out-of-order consumption, re-submitting either nonce must
+/// fail with `StaleState` — the bit stays set.
+#[test]
+fn test_replayed_nonce_rejected_after_out_of_order_use() {
+    let (env, sender, receiver, _token, sk) = setup();
+    let contract = env.register(StateChannel, ());
+    let client = StateChannelClient::new(&env, &contract);
+    client.initialize(&_token);
+
+    let pk = pubkey_from_signing_key(&env, &sk);
+    let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+    let state5 = StateUpdate {
+        nonce: 5,
+        balance: 100,
+    };
+    let sig5 = sign_state(&env, &sk, &pk, &state5);
+    client.update_state(&channel_id, &state5, &sig5);
+
+    let state3 = StateUpdate {
+        nonce: 3,
+        balance: 200,
+    };
+    let sig3 = sign_state(&env, &sk, &pk, &state3);
+    client.update_state(&channel_id, &state3, &sig3);
+
+    // Replay of the out-of-order nonce 3 (balance would even be valid).
+    let replay3 = StateUpdate {
+        nonce: 3,
+        balance: 300,
+    };
+    let sig_r3 = sign_state(&env, &sk, &pk, &replay3);
+    assert_eq!(
+        client.try_update_state(&channel_id, &replay3, &sig_r3),
+        Err(Ok(Error::StaleState))
+    );
+
+    // Replay of nonce 5 as well.
+    let replay5 = StateUpdate {
+        nonce: 5,
+        balance: 400,
+    };
+    let sig_r5 = sign_state(&env, &sk, &pk, &replay5);
+    assert_eq!(
+        client.try_update_state(&channel_id, &replay5, &sig_r5),
+        Err(Ok(Error::StaleState))
+    );
+}
+/// Window slide: consuming nonce 300 moves the window to base 256, after
+/// which old-window nonces (e.g. 2) are permanently out of range while
+/// in-window replays (300) stay rejected.
+#[test]
+fn test_nonce_window_slide_rejects_behind_nonces() {
+    let (env, sender, receiver, _token, sk) = setup();
+    let contract = env.register(StateChannel, ());
+    let client = StateChannelClient::new(&env, &contract);
+    client.initialize(&_token);
+
+    let pk = pubkey_from_signing_key(&env, &sk);
+    let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+    // First a small in-window nonce so the channel has a baseline state.
+    let state2 = StateUpdate {
+        nonce: 2,
+        balance: 100,
+    };
+    let sig2 = sign_state(&env, &sk, &pk, &state2);
+    client.update_state(&channel_id, &state2, &sig2);
+
+    // Jump past the first window: 300 lands in bucket base 256.
+    let state300 = StateUpdate {
+        nonce: 300,
+        balance: 200,
+    };
+    let sig300 = sign_state(&env, &sk, &pk, &state300);
+    client.update_state(&channel_id, &state300, &sig300);
+
+    let window = client.get_nonce_window(&channel_id);
+    assert_eq!(window.base, 256);
+    assert!(window.is_consumed(300));
+    assert!(!window.is_consumed(301));
+    // Nonce 2 is now before the window base — consumed-state, never usable.
+    assert!(window.is_consumed(2));
+
+    // Replay of 300: bit still set inside the window.
+    let replay = StateUpdate {
+        nonce: 300,
+        balance: 300,
+    };
+    let sig_r = sign_state(&env, &sk, &pk, &replay);
+    assert_eq!(
+        client.try_update_state(&channel_id, &replay, &sig_r),
+        Err(Ok(Error::StaleState))
+    );
+
+    // An old-window nonce can never re-enter: out of range entirely.
+    let old = StateUpdate {
+        nonce: 2,
+        balance: 400,
+    };
+    let sig_old = sign_state(&env, &sk, &pk, &old);
+    assert_eq!(
+        client.try_update_state(&channel_id, &old, &sig_old),
+        Err(Ok(Error::StaleState))
+    );
+    // The next fresh nonce inside the current window still works.
+    let state301 = StateUpdate {
+        nonce: 301,
+        balance: 500,
+    };
+    let sig301 = sign_state(&env, &sk, &pk, &state301);
+    client.update_state(&channel_id, &state301, &sig301);
+    assert_eq!(client.get_channel(&channel_id).balance, 500);
+}
+/// A signed state that lowers the receiver's entitlement is stale even when
+/// its nonce is fresh — the balance-regression guard (issue #374).
+#[test]
+fn test_balance_regression_rejected_with_fresh_nonce() {
+    let (env, sender, receiver, _token, sk) = setup();
+    let contract = env.register(StateChannel, ());
+    let client = StateChannelClient::new(&env, &contract);
+    client.initialize(&_token);
+
+    let pk = pubkey_from_signing_key(&env, &sk);
+    let channel_id = make_channel(&env, &client, &sender, &receiver, &pk, 1000, 720);
+
+    let state = StateUpdate {
+        nonce: 1,
+        balance: 500,
+    };
+    let sig = sign_state(&env, &sk, &pk, &state);
+    client.update_state(&channel_id, &state, &sig);
+
+    let regressed = StateUpdate {
+        nonce: 2,
+        balance: 300,
+    };
+    let sig_r = sign_state(&env, &sk, &pk, &regressed);
+    assert_eq!(
+        client.try_update_state(&channel_id, &regressed, &sig_r),
+        Err(Ok(Error::StaleState))
+    );
+}

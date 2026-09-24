@@ -2,9 +2,10 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, token,
-    Address, BytesN, Env,
+    Address, Bytes, BytesN, Env,
 };
 
+mod domain;
 mod types;
 
 pub use types::{max_settleable, AuthorizationRecord, BPS_DENOMINATOR, MAX_SLIPPAGE_BPS};
@@ -29,10 +30,13 @@ pub enum Error {
     InvalidAmount = 7,
     AuthorizationNotFound = 8,
     AllowanceFailed = 9,
+    /// `authorize_signed` was called for a buyer with no registered
+    /// Ed25519 signer key (issue #416).
+    SignerNotRegistered = 10,
     /// `max_slippage_bps` is above [`MAX_SLIPPAGE_BPS`].
-    InvalidSlippage = 10,
+    InvalidSlippage = 11,
     /// `cap` plus its slippage tolerance does not fit in an `i128`.
-    AmountOverflow = 11,
+    AmountOverflow = 12,
 }
 
 #[contracttype]
@@ -40,6 +44,9 @@ pub enum DataKey {
     Admin,
     Token,
     Authorization(BytesN<32>),
+    /// Persistent: the Ed25519 public key authorized to sign
+    /// `authorize_signed` digests for this buyer address (issue #416).
+    Signer(Address),
 }
 
 /// Emitted when a buyer authorizes a payment cap.
@@ -220,6 +227,119 @@ impl UptoAuthorization {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Register the Ed25519 public key whose signatures
+    /// [`authorize_signed`](Self::authorize_signed) will accept for `buyer`
+    /// (issue #416).
+    ///
+    /// `buyer.require_auth()`, so only the buyer can bind a key to their
+    /// address (or a contract acting as the buyer under its own auth rules).
+    /// Binding via storage — instead of deriving the key from the address —
+    /// keeps this usable for contract-address buyers, which cannot produce
+    /// Ed25519 signatures themselves.
+    pub fn register_signer(
+        env: Env,
+        buyer: Address,
+        signer_pubkey: BytesN<32>,
+    ) -> Result<(), Error> {
+        buyer.require_auth();
+        let key = DataKey::Signer(buyer);
+        env.storage().persistent().set(&key, &signer_pubkey);
+        // Threshold == extend_to so a freshly-written entry (already at the
+        // network minimum TTL) is actually extended, not silently skipped.
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, TTL_EXTEND, TTL_EXTEND);
+        Ok(())
+    }
+
+    /// Read-only: the registered signer key for `buyer`, if any (issue #416).
+    pub fn get_signer(env: Env, buyer: Address) -> Option<BytesN<32>> {
+        env.storage().persistent().get(&DataKey::Signer(buyer))
+    }
+
+    /// Read-only: this deployment's domain separator (issue #416) —
+    /// `sha256(network_id ‖ contract_address ‖ protocol_version)`. Fetch
+    /// this (or the digest below) when constructing an off-chain signature;
+    /// never hardcode it.
+    pub fn get_domain_separator(env: Env) -> BytesN<32> {
+        domain::compute_domain_separator(&env)
+    }
+
+    /// Read-only: the exact digest `authorize_signed` will verify against
+    /// (issue #416). Sign these 32 bytes with the registered Ed25519 key;
+    /// the returned value already includes the domain separator, so a
+    /// signature produced for it is bound to this network and this contract
+    /// address.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_authorization_digest(
+        env: Env,
+        payment_id: BytesN<32>,
+        from: Address,
+        to: Address,
+        cap: i128,
+        expiry: u32,
+    ) -> BytesN<32> {
+        domain::authorization_digest(
+            &env,
+            &domain::compute_domain_separator(&env),
+            &payment_id,
+            &from,
+            &to,
+            cap,
+            expiry,
+        )
+    }
+
+    /// [`authorize`](Self::authorize) gated by an Ed25519 signature over the
+    /// domain-separated digest (issue #416).
+    ///
+    /// The signature covers `network_id`, this contract's address, the
+    /// protocol version, and the full authorization tuple, so a signature
+    /// made on another network (or for another payment/cap) never verifies:
+    /// `ed25519_verify` traps and the whole invocation rolls back before any
+    /// allowance is granted. After verification the call proceeds through
+    /// the regular [`authorize`](Self::authorize) path — `from.require_auth`
+    /// still runs (the nested token `approve` needs it) — so the signature
+    /// is an *additional* binding, not a replacement for host auth.
+    #[allow(clippy::too_many_arguments)]
+    pub fn authorize_signed(
+        env: Env,
+        payment_id: BytesN<32>,
+        from: Address,
+        to: Address,
+        cap: i128,
+        expiry: u32,
+        signature: BytesN<64>,
+    ) -> Result<(), Error> {
+        let signer: BytesN<32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Signer(from.clone()))
+            .ok_or(Error::SignerNotRegistered)?;
+        env.storage().persistent().extend_ttl(
+            &DataKey::Signer(from.clone()),
+            TTL_EXTEND,
+            TTL_EXTEND,
+        );
+
+        let digest = domain::authorization_digest(
+            &env,
+            &domain::compute_domain_separator(&env),
+            &payment_id,
+            &from,
+            &to,
+            cap,
+            expiry,
+        );
+        let msg = Bytes::from(digest);
+        // Traps on mismatch: a signature forged for a different network,
+        // contract address, payment, recipient, cap, or expiry is rejected
+        // here, before `authorize` touches any storage or allowance.
+        env.crypto().ed25519_verify(&signer, &msg, &signature);
+
+        Self::authorize(env, payment_id, from, to, cap, expiry)
     }
 
     /// Settle a payment. The facilitator calls this with the actual amount

@@ -7,11 +7,23 @@
 //! Prevents duplicate public keys and zeroed addresses.
 //! Emits SignersRotated audit event.
 
-use soroban_sdk::{contractevent, Address, Env, String, Vec};
+use soroban_sdk::{contractevent, Address, Env, Vec};
 
+use crate::DataKey;
 use crate::Error;
 
+/// Strkeys of the all-zero account and contract addresses.
+const ZERO_ACCOUNT: &str = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+const ZERO_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+
+fn is_zero_address(env: &Env, addr: &Address) -> bool {
+    *addr == Address::from_str(env, ZERO_ACCOUNT) || *addr == Address::from_str(env, ZERO_CONTRACT)
+}
+
 /// Rotate signers and threshold atomically in a single call.
+///
+/// Requires the account's own authorization, i.e. `threshold` of the
+/// *current* signers must approve the rotation.
 ///
 /// # Parameters
 /// - `to_add`: new signers to add (must not already be signers)
@@ -29,6 +41,8 @@ pub fn rotate_signers_and_threshold(
     to_remove: Vec<Address>,
     new_threshold: u32,
 ) -> Result<(), Error> {
+    env.current_contract_address().require_auth();
+
     // Validate new_threshold: 1 <= new_threshold
     if new_threshold < 1 {
         return Err(Error::InsufficientSignatures);
@@ -36,62 +50,49 @@ pub fn rotate_signers_and_threshold(
 
     // Check for duplicate addresses in to_add
     let mut seen_in_add = Vec::<Address>::new(env);
-    for addr in &to_add {
-        // Check for duplicates within to_add
-        if seen_in_add.iter().any(|a| a == addr) {
+    for addr in to_add.iter() {
+        if seen_in_add.contains(&addr) {
             return Err(Error::InsufficientSignatures);
         }
-        seen_in_add.push_back(addr.clone());
+        seen_in_add.push_back(addr);
     }
 
-    // Check for duplicate addresses between to_add and to_remove
-    for addr in &to_remove {
-        if seen_in_add.iter().any(|a| a == addr) {
-            return Err(Error::InsufficientSignatures); // can't both add and remove same address
-        }
-    }
-
-    // Zero address validation: Soroban zero address is "X:" (all zeros).
-    // Validate that to_add and to_remove don't contain zero addresses.
-    let zero = String::from_str(env, "X:");
-    for addr in &to_add {
-        if addr.to_string() == zero {
-            return Err(Error::InsufficientSignatures);
-        }
-    }
-    for addr in &to_remove {
-        if addr.to_string() == zero {
+    // Can't both add and remove the same address
+    for addr in to_remove.iter() {
+        if seen_in_add.contains(&addr) {
             return Err(Error::InsufficientSignatures);
         }
     }
 
-    // Remove signers to remove from persistent storage
-    for addr in &to_remove {
-        env.storage()
-            .persistent()
-            .remove(&crate::DataKey::Signer(addr.clone()));
+    // Reject zeroed addresses.
+    for addr in to_add.iter().chain(to_remove.iter()) {
+        if is_zero_address(env, &addr) {
+            return Err(Error::InsufficientSignatures);
+        }
     }
 
-    // Add new signers to persistent storage
-    for addr in &to_add {
-        env.storage()
-            .persistent()
-            .set(&crate::DataKey::Signer(addr.clone()), &());
+    let previous_threshold: u32 = env
+        .storage()
+        .instance()
+        .get(&DataKey::Threshold)
+        .unwrap_or(1);
+
+    for addr in to_remove.iter() {
+        env.storage().persistent().remove(&DataKey::Signer(addr));
+    }
+    for addr in to_add.iter() {
+        env.storage().persistent().set(&DataKey::Signer(addr), &());
     }
 
-    // Update threshold
     env.storage()
         .instance()
-        .set(&crate::DataKey::Threshold, &new_threshold);
+        .set(&DataKey::Threshold, &new_threshold);
 
-    // Emit SignersRotated event
-    let added = to_add;
-    let removed = to_remove;
     SignersRotated {
-        previous_threshold: new_threshold.saturating_add(1), // approximate previous
+        previous_threshold,
         new_threshold,
-        added,
-        removed,
+        added: to_add,
+        removed: to_remove,
     }
     .publish(env);
 
@@ -107,4 +108,58 @@ pub struct SignersRotated {
     pub new_threshold: u32,
     pub added: Vec<Address>,
     pub removed: Vec<Address>,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Error, MultisigAccount, MultisigAccountClient};
+    use soroban_sdk::{testutils::Address as _, vec, Address, Env};
+
+    use super::{ZERO_ACCOUNT, ZERO_CONTRACT};
+
+    fn setup() -> (Env, MultisigAccountClient<'static>, Address) {
+        let env = Env::default();
+        let signer = Address::generate(&env);
+        let id = env.register(MultisigAccount, (vec![&env, signer.clone()], 1u32));
+        (env.clone(), MultisigAccountClient::new(&env, &id), signer)
+    }
+
+    #[test]
+    fn rotation_replaces_signers_and_threshold() {
+        let (env, client, old) = setup();
+        env.mock_all_auths();
+        let a = Address::generate(&env);
+        let b = Address::generate(&env);
+
+        client.rotate_signers_and_threshold(
+            &vec![&env, a.clone(), b.clone()],
+            &vec![&env, old.clone()],
+            &2,
+        );
+
+        assert!(client.is_signer(&a) && client.is_signer(&b));
+        assert!(!client.is_signer(&old));
+        assert_eq!(client.get_threshold(), 2);
+    }
+
+    #[test]
+    fn rotation_rejects_zero_addresses() {
+        let (env, client, _) = setup();
+        env.mock_all_auths();
+        for zero in [ZERO_ACCOUNT, ZERO_CONTRACT] {
+            let zero = Address::from_str(&env, zero);
+            assert_eq!(
+                client.try_rotate_signers_and_threshold(&vec![&env, zero], &vec![&env], &1),
+                Err(Ok(Error::InsufficientSignatures))
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn rotation_requires_account_auth() {
+        let (env, client, _) = setup();
+        let a = Address::generate(&env);
+        client.rotate_signers_and_threshold(&vec![&env, a], &vec![&env], &1);
+    }
 }

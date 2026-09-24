@@ -1,6 +1,7 @@
 #![no_std]
 
 pub mod events;
+pub mod incremental_merkle;
 pub mod merkle;
 pub mod signatures;
 pub mod zk_verifier;
@@ -61,6 +62,9 @@ pub enum DataKey {
     Shard(u64, u64),
     /// Proposed admin address pending acceptance via `accept_admin` (issue #288).
     PendingAdmin,
+    /// Append-only incremental Merkle tree state (issue #424): leaf count,
+    /// current root and packed frontier. See [`incremental_merkle`].
+    IncrementalTree,
 }
 
 /// Admin-configurable token-bucket rate limit applied to `anchor_batch`.
@@ -232,6 +236,19 @@ pub struct AnchorIntervalUpdatedEvent {
     pub previous_interval: u32,
     pub new_interval: u32,
     pub ledger: u32,
+}
+
+/// Emitted when a receipt leaf is appended to the incremental Merkle tree.
+///
+/// Topics: `("receipt_leaf_inserted_event", leaf_index)`.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReceiptLeafInsertedEvent {
+    #[topic]
+    pub leaf_index: u64,
+    pub leaf: BytesN<32>,
+    /// Tree root after the insertion.
+    pub root: BytesN<32>,
 }
 
 /// Approximately 30 days of ledgers, assuming ~5 seconds per ledger.
@@ -737,6 +754,68 @@ impl ReceiptAnchor {
             .instance()
             .get(&DataKey::MinAnchorInterval)
             .unwrap_or(0)
+    }
+
+    /// Append `leaf_hash` to the continuous-anchoring incremental Merkle tree
+    /// (issue #424) and return its zero-based leaf index. Admin only.
+    ///
+    /// Costs at most [`incremental_merkle::MAX_DEPTH`] hashes and a single
+    /// instance-storage write; the resulting root equals the batch root of
+    /// every leaf inserted so far, so batch-style proofs verify against it.
+    ///
+    /// # Errors
+    /// - `NotInitialized`: the contract has no admin.
+    /// - `BatchTooLarge`: the tree already holds
+    ///   [`incremental_merkle::MAX_LEAVES`] leaves.
+    pub fn insert_receipt_leaf(env: Env, leaf_hash: BytesN<32>) -> Result<u64, Error> {
+        let merchant: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        merchant.require_auth();
+
+        let mut tree = env
+            .storage()
+            .instance()
+            .get(&DataKey::IncrementalTree)
+            .unwrap_or_else(|| incremental_merkle::empty(&env));
+        let leaf_index = incremental_merkle::insert(&mut tree, &env, &leaf_hash)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::IncrementalTree, &tree);
+        env.storage()
+            .instance()
+            .extend_ttl(TTL_THRESHOLD, TTL_EXTEND);
+
+        ReceiptLeafInsertedEvent {
+            leaf_index,
+            leaf: leaf_hash,
+            root: tree.root,
+        }
+        .publish(&env);
+
+        Ok(leaf_index)
+    }
+
+    /// Current root of the incremental Merkle tree (read-only).
+    ///
+    /// # Errors
+    /// - `RootNotFound`: no leaf has been inserted yet.
+    pub fn get_incremental_root(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get::<_, incremental_merkle::IncrementalTree>(&DataKey::IncrementalTree)
+            .map(|tree| tree.root)
+            .ok_or(Error::RootNotFound)
+    }
+
+    /// Number of leaves in the incremental Merkle tree (read-only).
+    pub fn get_incremental_leaf_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get::<_, incremental_merkle::IncrementalTree>(&DataKey::IncrementalTree)
+            .map_or(0, |tree| tree.count)
     }
 
     pub fn get_shard_capacity(_env: Env) -> u64 {
