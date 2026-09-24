@@ -185,3 +185,68 @@ fn budget_prune_batches_100() {
     env.cost_estimate().budget().reset_unlimited();
     client.prune_batches(&DEFAULT_SHARD, &500_000);
 }
+
+// Baseline 892_836 (see docs/BENCHMARKS.md) * 1.15.
+#[test]
+#[budget_cpu_lt(1_027_000)]
+fn budget_verify_receipt_leaf_depth_1() {
+    let env = Env::default();
+    let (client, _) = setup_router(&env);
+    let (root, proof) = build_tree(&env, 1);
+    let leaf = BytesN::from_array(&env, &[0u8; 32]);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &2, &0, &100);
+    env.cost_estimate().budget().reset_unlimited();
+    assert!(client.verify_receipt_leaf(&DEFAULT_SHARD, &root, &leaf, &proof));
+}
+
+// Baseline 2_811_397 (see docs/BENCHMARKS.md) * 1.15.
+#[test]
+#[budget_cpu_lt(3_233_000)]
+fn budget_verify_receipt_leaf_depth_10() {
+    let env = Env::default();
+    let (client, _) = setup_router(&env);
+    let (root, proof) = build_tree(&env, 10);
+    let leaf = BytesN::from_array(&env, &[0u8; 32]);
+    client.anchor_batch(&DEFAULT_SHARD, &root, &MAX_BATCH_SIZE, &0, &100);
+    env.cost_estimate().budget().reset_unlimited();
+    assert!(client.verify_receipt_leaf(&DEFAULT_SHARD, &root, &leaf, &proof));
+}
+
+/// Soroban per-transaction limits (mainnet network config).
+const TX_MAX_CPU_INSTRUCTIONS: u64 = 100_000_000;
+const TX_MAX_MEMORY_BYTES: u64 = 41_943_040;
+
+/// Measures `verify_receipt_leaf` CPU and memory at every proof depth up to
+/// `MAX_PROOF_LEN`, in WASM mode, and prints them for `docs/BENCHMARKS.md`.
+/// Fails if the worst case uses more than 10% of either per-transaction
+/// limit, leaving room for the caller's own work in the same transaction.
+#[test]
+fn measure_verify_receipt_leaf_by_depth() {
+    for depth in 0..=MAX_PROOF_LEN {
+        // Eleven envs, each embedding both WASMs: skip the snapshot files.
+        let env = Env::new_with_config(soroban_sdk::testutils::EnvTestConfig {
+            capture_snapshot_at_drop: false,
+        });
+        let (client, _) = setup_router(&env);
+        let (root, proof) = if depth == 0 {
+            let leaf = BytesN::from_array(&env, &[0u8; 32]);
+            (leaf, vec![&env])
+        } else {
+            build_tree(&env, depth)
+        };
+        let leaf = BytesN::from_array(&env, &[0u8; 32]);
+        client.anchor_batch(&DEFAULT_SHARD, &root, &MAX_BATCH_SIZE, &0, &100);
+
+        env.cost_estimate().budget().reset_unlimited();
+        assert!(client.verify_receipt_leaf(&DEFAULT_SHARD, &root, &leaf, &proof));
+        let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+        let mem = env.cost_estimate().budget().memory_bytes_cost();
+        std::println!("BENCHMARK verify_receipt_leaf depth={depth} cpu={cpu} mem={mem}");
+
+        assert!(
+            cpu * 10 < TX_MAX_CPU_INSTRUCTIONS,
+            "depth {depth}: cpu {cpu}"
+        );
+        assert!(mem * 10 < TX_MAX_MEMORY_BYTES, "depth {depth}: mem {mem}");
+    }
+}
