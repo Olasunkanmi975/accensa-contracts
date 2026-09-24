@@ -56,7 +56,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "function_name": "authorize",
+              "function_name": "authorize_with_slippage",
               "args": [
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
@@ -71,7 +71,10 @@
                   "i128": "1000"
                 },
                 {
-                  "u32": 100
+                  "u32": 1000
+                },
+                {
+                  "u32": 10000
                 }
               ]
             }
@@ -90,10 +93,10 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
                     },
                     {
-                      "i128": "1000"
+                      "i128": "2000"
                     },
                     {
-                      "u32": 100
+                      "u32": 1000
                     }
                   ]
                 }
@@ -109,7 +112,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-              "function_name": "authorize",
+              "function_name": "authorize_with_slippage",
               "args": [
                 {
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
@@ -124,7 +127,10 @@
                   "i128": "1000"
                 },
                 {
-                  "u32": 100
+                  "u32": 1000
+                },
+                {
+                  "u32": 10000
                 }
               ]
             }
@@ -133,6 +139,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -146,7 +153,7 @@
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                 },
                 {
-                  "i128": "500"
+                  "i128": "2000"
                 }
               ]
             }
@@ -166,7 +173,7 @@
                   "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
                 },
                 {
-                  "i128": "500"
+                  "i128": "2000"
                 }
               ]
             }
@@ -188,7 +195,7 @@
                       "i128": "0"
                     },
                     {
-                      "u32": 100
+                      "u32": 1000
                     }
                   ]
                 }
@@ -198,11 +205,12 @@
           ]
         }
       ]
-    ]
+    ],
+    []
   ],
   "ledger": {
     "protocol_version": 27,
-    "sequence_number": 99,
+    "sequence_number": 0,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -260,7 +268,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "2032731177588607455"
+                  "nonce": "4837995959683129791"
                 }
               },
               "durability": "temporary",
@@ -269,7 +277,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 6312098
+        "live_until": 6311999
       },
       {
         "entry": {
@@ -280,7 +288,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "4837995959683129791"
+                  "nonce": "8370022561469687789"
                 }
               },
               "durability": "temporary",
@@ -320,7 +328,7 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
               "key": {
                 "ledger_key_nonce": {
-                  "nonce": "4270020994084947596"
+                  "nonce": "6277191135259896685"
                 }
               },
               "durability": "temporary",
@@ -329,7 +337,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 6312098
+        "live_until": 6311999
       },
       {
         "entry": {
@@ -392,7 +400,7 @@
                       "symbol": "expiry"
                     },
                     "val": {
-                      "u32": 100
+                      "u32": 1000
                     }
                   },
                   {
@@ -408,7 +416,7 @@
                       "symbol": "max_slippage_bps"
                     },
                     "val": {
-                      "u32": 0
+                      "u32": 10000
                     }
                   },
                   {
@@ -525,7 +533,7 @@
                       "symbol": "live_until_ledger"
                     },
                     "val": {
-                      "u32": 100
+                      "u32": 1000
                     }
                   }
                 ]
@@ -534,7 +542,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 100
+        "live_until": 1000
       },
       {
         "entry": {
@@ -561,7 +569,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "9999500"
+                      "i128": "9998000"
                     }
                   },
                   {
@@ -613,7 +621,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "500"
+                      "i128": "2000"
                     }
                   },
                   {
@@ -638,7 +646,7 @@
           },
           "ext": "v0"
         },
-        "live_until": 518499
+        "live_until": 518400
       },
       {
         "entry": {
@@ -759,111 +767,5 @@
       }
     ]
   },
-  "events": [
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "transfer"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
-              },
-              {
-                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL7NV"
-              }
-            ],
-            "data": {
-              "i128": "500"
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "approve"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-              },
-              {
-                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
-              },
-              {
-                "string": "aaa:GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL7NV"
-              }
-            ],
-            "data": {
-              "vec": [
-                {
-                  "i128": "0"
-                },
-                {
-                  "u32": 100
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
-        "type_": "contract",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "settle_event"
-              },
-              {
-                "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
-              }
-            ],
-            "data": {
-              "map": [
-                {
-                  "key": {
-                    "symbol": "actual"
-                  },
-                  "val": {
-                    "i128": "500"
-                  }
-                },
-                {
-                  "key": {
-                    "symbol": "from"
-                  },
-                  "val": {
-                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                  }
-                }
-              ]
-            }
-          }
-        }
-      },
-      "failed_call": false
-    }
-  ]
+  "events": []
 }

@@ -5,6 +5,10 @@ use soroban_sdk::{
     Address, BytesN, Env,
 };
 
+mod types;
+
+pub use types::{max_settleable, AuthorizationRecord, BPS_DENOMINATOR, MAX_SLIPPAGE_BPS};
+
 contractmeta!(key = "name", val = "UptoAuthorization");
 contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
 contractmeta!(
@@ -25,6 +29,10 @@ pub enum Error {
     InvalidAmount = 7,
     AuthorizationNotFound = 8,
     AllowanceFailed = 9,
+    /// `max_slippage_bps` is above [`MAX_SLIPPAGE_BPS`].
+    InvalidSlippage = 10,
+    /// `cap` plus its slippage tolerance does not fit in an `i128`.
+    AmountOverflow = 11,
 }
 
 #[contracttype]
@@ -34,20 +42,10 @@ pub enum DataKey {
     Authorization(BytesN<32>),
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AuthorizationRecord {
-    pub from: Address,
-    pub to: Address,
-    pub cap: i128,
-    pub expiry: u32,
-    pub consumed: bool,
-}
-
 /// Emitted when a buyer authorizes a payment cap.
 ///
 /// Topics: `("authorize_event", payment_id)`. The data map contains
-/// `from`, `to`, `cap`, and `expiry`.
+/// `from`, `to`, `cap`, `expiry`, and `max_slippage_bps`.
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorizeEvent {
@@ -57,6 +55,8 @@ pub struct AuthorizeEvent {
     pub to: Address,
     pub cap: i128,
     pub expiry: u32,
+    /// Slippage tolerated above `cap`, in basis points (`0` = none).
+    pub max_slippage_bps: u32,
 }
 
 /// Emitted when a payment is settled.
@@ -111,6 +111,9 @@ impl UptoAuthorization {
     /// The contract records the authorization and calls `approve` on the token
     /// to grant itself the allowance. The buyer's auth entry must cover both
     /// this call and the nested `approve` call.
+    ///
+    /// Settlement is capped at exactly `cap`; see
+    /// [`Self::authorize_with_slippage`] to tolerate price movement.
     pub fn authorize(
         env: Env,
         payment_id: BytesN<32>,
@@ -119,9 +122,34 @@ impl UptoAuthorization {
         cap: i128,
         expiry: u32,
     ) -> Result<(), Error> {
+        Self::authorize_with_slippage(env, payment_id, from, to, cap, expiry, 0)
+    }
+
+    /// Like [`Self::authorize`], but `settle` may charge up to
+    /// `cap + floor(cap * max_slippage_bps / 10_000)` to absorb price movement
+    /// in cross-currency settlements. The buyer's signature covers
+    /// `max_slippage_bps`, and the token allowance is granted for that full
+    /// maximum so `transfer_from` can cover it.
+    ///
+    /// Fails with [`Error::InvalidSlippage`] if `max_slippage_bps` exceeds
+    /// [`MAX_SLIPPAGE_BPS`], or [`Error::AmountOverflow`] if the maximum does
+    /// not fit in an `i128`.
+    pub fn authorize_with_slippage(
+        env: Env,
+        payment_id: BytesN<32>,
+        from: Address,
+        to: Address,
+        cap: i128,
+        expiry: u32,
+        max_slippage_bps: u32,
+    ) -> Result<(), Error> {
         if cap <= 0 {
             return Err(Error::InvalidAmount);
         }
+        if max_slippage_bps > MAX_SLIPPAGE_BPS {
+            return Err(Error::InvalidSlippage);
+        }
+        let max_amount = max_settleable(cap, max_slippage_bps).ok_or(Error::AmountOverflow)?;
 
         // The buyer must authorize this call — they are granting the contract
         // a SEP-41 allowance. In production, the buyer signs one auth entry
@@ -156,7 +184,7 @@ impl UptoAuthorization {
         // Get the token and approve the allowance.
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let client = token::Client::new(&env, &token_addr);
-        client.approve(&from, &env.current_contract_address(), &cap, &expiry);
+        client.approve(&from, &env.current_contract_address(), &max_amount, &expiry);
 
         // Record the authorization.
         let record = AuthorizationRecord {
@@ -165,6 +193,7 @@ impl UptoAuthorization {
             cap,
             expiry,
             consumed: false,
+            max_slippage_bps,
         };
 
         env.storage()
@@ -186,6 +215,7 @@ impl UptoAuthorization {
             to,
             cap,
             expiry,
+            max_slippage_bps,
         }
         .publish(&env);
 
@@ -229,8 +259,9 @@ impl UptoAuthorization {
             return Err(Error::Expired);
         }
 
-        // Check actual <= cap.
-        if actual > record.cap {
+        // Check actual <= cap + slippage tolerance.
+        let max_amount = record.max_settleable().ok_or(Error::AmountOverflow)?;
+        if actual > max_amount {
             return Err(Error::AmountExceedsCap);
         }
 
@@ -244,7 +275,7 @@ impl UptoAuthorization {
             &actual,
         );
 
-        // Zero out the allowance so cap - actual doesn't linger.
+        // Zero out the allowance so max_amount - actual doesn't linger.
         token_client.approve(
             &record.from,
             &env.current_contract_address(),
