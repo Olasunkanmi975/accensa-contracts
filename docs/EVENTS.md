@@ -189,3 +189,35 @@ time-window-based refunds.
 
 The `feed_id` is the feed of the policy that was in force, captured before it
 was removed, so a reader can correlate the clear with the preceding set event.
+
+---
+
+## `MultisigAccount` Events
+
+### 16. `PausedEvent`
+Emitted when the account's emergency pause is engaged, by the account itself
+(`threshold` signers) or by its security guardian. While paused the account
+refuses to authorize any call except its own `pause`, `unpause`,
+`set_guardian` and `rotate_signers_and_threshold`.
+
+- **Topics**: `("paused_event", ledger: u32)`
+- **Data Map**:
+  - `by` (`Address`): The account's own address (threshold signers) or the guardian.
+
+### 17. `UnpausedEvent`
+Emitted when the account's emergency pause is lifted.
+
+- **Topics**: `("unpaused_event", ledger: u32)`
+- **Data Map**:
+  - `by` (`Address`): The account's own address (threshold signers) or the guardian.
+
+The account is paused between a `paused_event` and the next `unpaused_event`.
+
+### 18. `GuardianSetEvent`
+Emitted when the account's threshold signers set, replace or clear the security
+guardian.
+
+- **Topics**: `("guardian_set_event",)`
+- **Data Map**:
+  - `previous` (`Option<Address>`): The guardian before the change.
+  - `new` (`Option<Address>`): The guardian after the change; `None` = no guardian.
