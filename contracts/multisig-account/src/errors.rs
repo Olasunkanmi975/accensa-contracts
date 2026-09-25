@@ -18,7 +18,12 @@ pub enum Error {
     /// An Ed25519 signature's `s` scalar is not canonical (`s >= L`), i.e.
     /// it is a malleated form of some other valid signature.
     NonCanonicalSignature = 7,
+    /// A sub-threshold spend would exceed a signer's remaining daily
+    /// allowance; the full threshold is required.
+    DailyLimitExceeded = 8,
+    /// A daily limit must not be negative.
+    InvalidLimit = 9,
     /// The account is paused: it will not authorize or execute any operation
     /// other than the pause controls and signer rotation.
-    Paused = 8,
+    Paused = 10,
 }
