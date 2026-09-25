@@ -9,6 +9,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`cross-chain` (issue #456): outbound withdrawal bridging requests.** Implements
+  `withdraw_to_evm` on `CrossChainBridge`, burning wrapped tokens on Soroban,
+  incrementing a monotonic sequence number, and emitting standardized
+  `OutboundBridgePayload` events under `(bridge, withdraw, sequence)` for
+  relayer consumption. Includes admin-controlled pause/unpause toggles.
 - **`refund-vault-factory` (issue #464): protocol TVL query.** New read-only
   `get_tvl(asset)` sums the `asset` balance of every vault the factory has
   deployed — read from the SEP-41 token contract rather than the vault's own
