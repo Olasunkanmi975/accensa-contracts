@@ -9,6 +9,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`cross-chain` (issue #457): Wormhole VAA parsing and guardian verification.**
+  Parses Wormhole VAA binary envelopes and verifies guardian secp256k1 signatures
+  over double-keccak256 body digests via `env.crypto().secp256k1_recover`. Enforces
+  strictly ascending guardian index ordering and quorum requirements (`(2N/3) + 1`)
+  against stored active `GuardianSet` records.
 - **`cross-chain` (issue #456): outbound withdrawal bridging requests.** Implements
   `withdraw_to_evm` on `CrossChainBridge`, burning wrapped tokens on Soroban,
   incrementing a monotonic sequence number, and emitting standardized
