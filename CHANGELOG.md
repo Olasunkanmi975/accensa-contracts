@@ -9,6 +9,36 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`refund-vault-factory` (issue #464): protocol TVL query.** New read-only
+  `get_tvl(asset)` sums the `asset` balance of every vault the factory has
+  deployed — read from the SEP-41 token contract rather than the vault's own
+  bookkeeping — so one call answers "how much value is locked?" for
+  DefiLlama-style analytics. A vault configured with a different token holds
+  no `asset` and contributes `0`, so a single factory can host vaults across
+  many assets.
+- **`treasury` (issue #467): token vesting schedules.** New contract
+  (`contracts/treasury`, `src/vesting.rs`) releasing team/investor
+  allocations linearly over four years after a one-year cliff. The admin
+  registers a `VestingSchedule` per beneficiary with `add_schedule` (or
+  `add_team_schedule` for the 1y-cliff/4y-window defaults) and the
+  beneficiary calls `claim_vested` to withdraw whatever has unlocked;
+  `vested_amount` / `claimable` preview the curve without changing state. A
+  schedule can never pay out more than its `total`, and a claim with nothing
+  new unlocked fails with `Error::NothingToClaim`.
+- **`state-channel` (issue #471): batched Ed25519 verification.** New `crypto`
+  module (`crypto::verify_signatures`) verifies a flat array of
+  signer/signature pairs against one canonical payload in a single pass, and
+  length-checks the pairing before touching the host (a mismatch returns
+  `Error::InvalidSignature`; a forged signature still traps). `mutual_close`
+  routes both of its signatures through it.
+- **`refund-vault` (issue #473): partial-refund settlement preview.** New
+  read-only `preview_settlement(payment_ref, amount, payment_amount)` reports
+  exactly how a partial refund would split — the buyer's payout, the fee, the
+  remainder the merchant retains, and the running cumulative total — including
+  the fee's round-up dust. The ceiling rule and fee split now live once, in
+  `settlement::resolve_ceiling` / `settlement::split_amount`, and are shared
+  with the live `refund` path so a preview can never disagree with the
+  transfer it describes.
 - **`multisig-account`: emergency pause circuit breaker.** `pause(caller)` /
   `unpause(caller)` may be called by the account itself (`threshold` signers)
   or a security guardian set with `set_guardian` (threshold only). While
