@@ -9,6 +9,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`state-channel` (issue #461): ephemeral key delegation for mobile wallets.**
+  Adds `DelegationCertificate` allowing temporary Ed25519 signing keys to act on
+  behalf of master keys within a ledger sequence window. Supports both
+  channel-scoped and wildcard delegations, verified on-chain in
+  `update_state_delegated` and `close_channel_delegated`.
 - **`refund-vault-factory` (issue #464): protocol TVL query.** New read-only
   `get_tvl(asset)` sums the `asset` balance of every vault the factory has
   deployed — read from the SEP-41 token contract rather than the vault's own
