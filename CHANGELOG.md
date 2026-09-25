@@ -9,6 +9,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`common` (issue #463): standardized event emission for indexer subgraphs.**
+  Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
+  and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,
+  `AnchorEventPayload`) for granular GraphQL indexing.
 - **`cross-chain` (issue #457): Wormhole VAA parsing and guardian verification.**
   Parses Wormhole VAA binary envelopes and verifies guardian secp256k1 signatures
   over double-keccak256 body digests via `env.crypto().secp256k1_recover`. Enforces
