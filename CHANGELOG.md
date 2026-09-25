@@ -9,6 +9,27 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`multisig-account`: emergency pause circuit breaker.** `pause(caller)` /
+  `unpause(caller)` may be called by the account itself (`threshold` signers)
+  or a security guardian set with `set_guardian` (threshold only). While
+  paused, `__check_auth` refuses every outbound authorization, including
+  sub-threshold spends, with `Error::Paused` (10); only the account's own
+  `pause`, `unpause`, `set_guardian` and `rotate_signers_and_threshold` stay
+  authorizable, and queued timelock transactions cannot execute. Read-only
+  queries are unaffected. Adds `is_paused`, `get_guardian`, `PausedEvent`,
+  `UnpausedEvent` and `GuardianSetEvent`.
+- **`upto-authorization`: slippage tolerance.** New
+  `authorize_with_slippage(payment_id, from, to, cap, expiry, max_slippage_bps)`
+  lets `settle` charge up to `cap + floor(cap * bps / 10_000)`; the token
+  allowance covers that maximum. `authorize` and `authorize_signed` are
+  unchanged (0 bps). The bound is computed without forming `cap * bps`, so it
+  cannot overflow; `bps` above 10,000 fails with `Error::InvalidSlippage`
+  (11) and an unrepresentable maximum with `Error::AmountOverflow` (12).
+  `AuthorizationRecord` and `AuthorizeEvent` gain a `max_slippage_bps` field.
+- **`receipt-anchor`: `verify_receipt_leaf(shard_id, root, leaf, proof)`.**
+  Verifies a sorted-pair Merkle proof (ADR-001) against the shard's retained
+  roots. The fold lives in the new `merkle` module. Worst case (depth 10):
+  2.81M CPU instructions, 1.52 MB memory; see `docs/BENCHMARKS.md`.
 - **`receipt-shard` (issue #419): shard health diagnostics.** New read-only
   `get_shard_diagnostics()` returns a `ShardDiagnostics` snapshot: assigned
   range, pruning cursor (oldest unpruned batch), high-water batch id, live
@@ -183,6 +204,16 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+- **Build fixes for code merged without compiling.** `governance` declares
+  its `voting` and `math` modules and no longer moves `member` before reuse;
+  stray `#![no_std]` attributes in submodules (`governance` `ragequit.rs` /
+  `voting.rs`, `upto-authorization` `domain.rs`) are removed; unit tests in
+  `governance::voting` run inside a contract context, and two `isqrt`
+  expectations that were off by 10x are corrected.
+- **Known issue, test ignored:** `governance::set_treasury_token` is reachable
+  only through `execute` invoking the contract itself, which Soroban rejects
+  ("Contract re-entry is not allowed"). Its test is `#[ignore]`d pending a
+  design fix.
 - **`state-channel`: restore the build.** The merge of #504 dropped the
   `extend_instance_ttl` and `NonceWindow` imports and the `nonce` module
   declaration, and `nonce.rs` used a non-existent `BytesN::zero` and a
