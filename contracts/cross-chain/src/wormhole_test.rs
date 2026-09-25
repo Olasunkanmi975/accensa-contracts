@@ -269,7 +269,8 @@ fn test_contract_verify_and_parse_vaa_integration() {
     let client = CrossChainBridgeClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let token = Address::generate(&env);
+    client.initialize(&admin, &token, &1);
 
     assert_eq!(client.get_admin(), admin);
 
@@ -312,7 +313,8 @@ fn test_contract_missing_guardian_set_fails() {
     let client = CrossChainBridgeClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    let token = Address::generate(&env);
+    client.initialize(&admin, &token, &1);
 
     let body_vec = build_dummy_body_bytes(b"test");
     let sigs = Vec::new(&env);
