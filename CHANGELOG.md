@@ -9,6 +9,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`common` (issue #463): standardized event emission for indexer subgraphs.**
+  Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
+  and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,
+  `AnchorEventPayload`) for granular GraphQL indexing.
 - **`state-channel` (issue #461): ephemeral key delegation for mobile wallets.**
   Adds `DelegationCertificate` allowing temporary Ed25519 signing keys to act on
   behalf of master keys within a ledger sequence window. Supports both
