@@ -9,6 +9,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`state-channel` (issue #461): ephemeral key delegation for mobile wallets.**
+  Adds `DelegationCertificate` allowing temporary Ed25519 signing keys to act on
+  behalf of master keys within a ledger sequence window. Supports both
+  channel-scoped and wildcard delegations, verified on-chain in
+  `update_state_delegated` and `close_channel_delegated`.
 - **`cross-chain` (issue #456): outbound withdrawal bridging requests.** Implements
   `withdraw_to_evm` on `CrossChainBridge`, burning wrapped tokens on Soroban,
   incrementing a monotonic sequence number, and emitting standardized
