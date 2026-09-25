@@ -107,8 +107,10 @@ fn build_tree(env: &Env, depth: u32) -> (BytesN<32>, Vec<BytesN<32>>) {
     (layer.get(0).unwrap(), proof)
 }
 
+// Baseline 2_857_051 (re-measured after the shard diagnostics counters,
+// #419) * 1.15.
 #[test]
-#[budget_cpu_lt(2_780_000)]
+#[budget_cpu_lt(3_286_000)]
 fn budget_anchor_batch_count_1() {
     let env = Env::default();
     let (client, _) = setup_router(&env);
@@ -117,8 +119,10 @@ fn budget_anchor_batch_count_1() {
     client.anchor_batch(&DEFAULT_SHARD, &root, &1, &0, &10);
 }
 
+// Baseline 2_857_051 (re-measured after the shard diagnostics counters,
+// #419) * 1.15.
 #[test]
-#[budget_cpu_lt(2_780_000)]
+#[budget_cpu_lt(3_286_000)]
 fn budget_anchor_batch_count_500() {
     let env = Env::default();
     let (client, _) = setup_router(&env);
@@ -127,8 +131,10 @@ fn budget_anchor_batch_count_500() {
     client.anchor_batch(&DEFAULT_SHARD, &root, &500, &0, &10);
 }
 
+// Baseline 2_857_051 (re-measured after the shard diagnostics counters,
+// #419) * 1.15.
 #[test]
-#[budget_cpu_lt(2_780_000)]
+#[budget_cpu_lt(3_286_000)]
 fn budget_anchor_batch_count_1000() {
     let env = Env::default();
     let (client, _) = setup_router(&env);
