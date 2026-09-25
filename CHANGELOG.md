@@ -9,6 +9,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`common` (issue #463): standardized event emission for indexer subgraphs.**
+  Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
+  and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,
+  `AnchorEventPayload`) for granular GraphQL indexing.
 - **`refund-vault-factory` (issue #464): protocol TVL query.** New read-only
   `get_tvl(asset)` sums the `asset` balance of every vault the factory has
   deployed — read from the SEP-41 token contract rather than the vault's own
