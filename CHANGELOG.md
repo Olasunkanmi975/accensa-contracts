@@ -9,38 +9,20 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
-- **`receipt-shard` (issue #419): shard health diagnostics.** New read-only
-  `get_shard_diagnostics()` returns a `ShardDiagnostics` snapshot: assigned
-  range, pruning cursor (oldest unpruned batch), high-water batch id, live
-  batch and leaf counts, lifetime leaf total, live batches still inside the
-  retention window (`active_dispute_count`), deepest Merkle tree anchored,
-  persistent storage entries, and a `consistent` flag covering the shard's
-  internal invariants. The counters live in one `ShardStats` instance entry
-  kept up to date by `anchor_batch` and both pruning paths.
-- **`multisig-account` (issue #413): daily spending limits for sub-threshold
-  signers.** Governance sets a per-token allowance with
-  `set_daily_limit(token, limit)` (full threshold). After that, a
-  `transfer` of the account's own funds authorized by fewer than `threshold`
-  signers is accepted while it fits in each signer's remaining allowance for
-  the current 24-hour window (ledger timestamp). Anything else still needs
-  the full threshold (`Error::InsufficientSignatures` /
-  `Error::DailyLimitExceeded`). Adds `get_daily_limit`, `get_spent_today`
-  and `DailyLimitSet`.
-- **`state-channel` (issue #412): cooperative mutual close.** The receiver
-  registers an Ed25519 key with `register_receiver_key`. `mutual_close(final_state,
-  sig_a, sig_b)` then checks both signatures over a domain-separated
-  `MutualCloseState` (bound to the contract and channel id), requires the
-  split to add up to the escrow, pays both parties at once from `Open`,
-  `Closed` or `Disputed`, deletes the channel's storage entries and emits
-  `ChannelClosedCooperative`.
-- **`refund-policy-time` (issue #426): oracle-assisted dispute resolution.**
-  The time policy also accepts `TimeOraclePolicyParams` (`window`,
-  `deadline`, `oracle`, `max_report_age`). It asks the delivery oracle for
-  the payment's `DeliveryReport`: `Lost` admits the refund even outside the
-  window, `Delivered` rejects it with `Error::OraclePolicyDenied`, and
-  `Pending` falls back to the window/deadline check. So do stale, future-dated
-  or mismatched reports, and oracles that trap or do not exist. Emits
-  `OracleResolutionApplied`. Plain `TimePolicyParams` behave as before.
+- **`RefundVault` (issue #415): yield-bearing escrow strategy hook.** The
+  `YieldStrategy` interface moves to `src/strategy.rs`. Strategies must be
+  whitelisted with `approve_yield_strategy` (`revoke_yield_strategy`,
+  `is_strategy_approved`) before `set_yield_strategy` / `deploy_to_yield`
+  accept them (`Error::StrategyNotApproved`); a strategy still holding
+  principal cannot be replaced or revoked (`Error::StrategyHasPrincipal`).
+  Deployed principal is now instantly redeemable: `refund`, `claim_batch`,
+  `process_batch` and `withdraw` recall any liquidity shortfall from the
+  strategy in the same call, checked against the vault's real balance delta.
+  `emergency_exit_yield` recalls all principal, even while paused.
+  `set_yield_recipient` / `distribute_yield` route harvested yield to the
+  protocol treasury or a merchant rebate pool (default: the merchant).
+  **Behaviour change:** a refund larger than the liquid float but covered by
+  deployed principal now succeeds instead of failing with `InsufficientFloat`.
 - **`state-channel` (issue #423): multi-asset collateral pooling.** New
   `open_multi_asset_channel` escrows several tokens in one channel, tracked
   per token as a `BalanceRecord`. Signed `MultiAssetState`s must name exactly
