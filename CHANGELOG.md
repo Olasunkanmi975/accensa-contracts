@@ -9,6 +9,10 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`common` (issue #463): standardized event emission for indexer subgraphs.**
+  Defines canonical `[Protocol, Module, Action]` topic schema (`PROTOCOL = symbol_short!("accensa")`)
+  and typed event payloads (`TransferEventPayload`, `RefundEventPayload`, `ChannelStatePayload`,
+  `AnchorEventPayload`) for granular GraphQL indexing.
 - **`cross-chain` (issue #456): outbound withdrawal bridging requests.** Implements
   `withdraw_to_evm` on `CrossChainBridge`, burning wrapped tokens on Soroban,
   incrementing a monotonic sequence number, and emitting standardized
