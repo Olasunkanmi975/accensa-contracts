@@ -14,6 +14,7 @@ name = "accensa-cross-chain"
 version = "0.1.0"
 dependencies = [
  "accensa-common",
+ "k256",
  "soroban-sdk",
 ]
 
