@@ -5,6 +5,8 @@ mod close_test;
 #[cfg(test)]
 mod crypto_test;
 #[cfg(test)]
+mod delegation_test;
+#[cfg(test)]
 mod multi_asset_test;
 #[cfg(test)]
 mod test;
@@ -324,6 +326,57 @@ impl StateChannel {
         Ok(())
     }
 
+    /// Submit a state update signed by a delegated ephemeral key.
+    pub fn update_state_delegated(
+        env: Env,
+        channel_id: u64,
+        state: StateUpdate,
+        signature: BytesN<64>,
+        certificate: DelegationCertificate,
+        cert_signature: BytesN<64>,
+    ) -> Result<(), Error> {
+        let mut channel = Self::get_channel_internal(&env, channel_id)?;
+
+        if channel.phase != ChannelPhase::Open {
+            return Err(Error::ChannelNotOpen);
+        }
+
+        Self::verify_delegated_state_signature(
+            &env,
+            &channel,
+            channel_id,
+            &state,
+            &signature,
+            &certificate,
+            &cert_signature,
+        )?;
+
+        if state.balance < 0 || state.balance > channel.amount {
+            return Err(Error::ExceedsPayment);
+        }
+        if state.balance < channel.balance {
+            return Err(Error::StaleState);
+        }
+        channel.nonce_window.consume(&env, state.nonce)?;
+
+        channel.nonce = channel.nonce.max(state.nonce);
+        channel.balance = state.balance;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+
+        StateUpdatedEvent {
+            channel_id,
+            nonce: state.nonce,
+            balance: state.balance,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// Cooperatively close the channel with the latest agreed state.
     pub fn close_channel(
         env: Env,
@@ -358,6 +411,65 @@ impl StateChannel {
         // already-consumed nonce at close time is tolerated (the sender may
         // co-sign a close with the last submitted state), while a fresh one
         // joins the window so it cannot be replayed later.
+        let _ = channel.nonce_window.consume(&env, state.nonce);
+        channel.nonce = channel.nonce.max(state.nonce);
+        channel.balance = state.balance;
+        channel.phase = ChannelPhase::Closed;
+        channel.closed_at = env.ledger().sequence();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Channel(channel_id), &channel);
+        extend_instance_ttl(&env, TTL_THRESHOLD, TTL_EXTEND);
+
+        ChannelClosedEvent {
+            channel_id,
+            balance: state.balance,
+            closed_at: channel.closed_at,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Cooperatively close the channel using a state signed by a delegated ephemeral key.
+    pub fn close_channel_delegated(
+        env: Env,
+        channel_id: u64,
+        state: StateUpdate,
+        signature: BytesN<64>,
+        certificate: DelegationCertificate,
+        cert_signature: BytesN<64>,
+    ) -> Result<(), Error> {
+        let mut channel = Self::get_channel_internal(&env, channel_id)?;
+
+        if channel.phase != ChannelPhase::Open {
+            return Err(Error::ChannelNotOpen);
+        }
+
+        let max_lifetime: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxChannelLifetime)
+            .unwrap_or(DEFAULT_MAX_CHANNEL_LIFETIME);
+        if env.ledger().sequence() > channel.opened_at + max_lifetime {
+            return Err(Error::ChannelExpired);
+        }
+
+        Self::verify_delegated_state_signature(
+            &env,
+            &channel,
+            channel_id,
+            &state,
+            &signature,
+            &certificate,
+            &cert_signature,
+        )?;
+
+        if state.balance < 0 || state.balance > channel.amount {
+            return Err(Error::ExceedsPayment);
+        }
+
         let _ = channel.nonce_window.consume(&env, state.nonce);
         channel.nonce = channel.nonce.max(state.nonce);
         channel.balance = state.balance;
@@ -781,6 +893,28 @@ impl StateChannel {
         Ok(())
     }
 
+    /// Verify that `signature` is a valid Ed25519 signature by the delegated
+    /// ephemeral key authorized by `certificate`.
+    fn verify_delegated_state_signature(
+        env: &Env,
+        channel: &Channel,
+        channel_id: u64,
+        state: &StateUpdate,
+        signature: &BytesN<64>,
+        certificate: &DelegationCertificate,
+        cert_signature: &BytesN<64>,
+    ) -> Result<(), Error> {
+        let payload = Self::state_payload(env, channel, state);
+        certificate.verify_delegated_state_signature(
+            env,
+            cert_signature,
+            &channel.sender_pubkey,
+            channel_id,
+            &payload,
+            signature,
+        )
+    }
+
     /// Build the canonical byte representation of a state update for signing.
     fn state_payload(env: &Env, channel: &Channel, state: &StateUpdate) -> Bytes {
         let mut buf = Bytes::new(env);
@@ -795,10 +929,13 @@ impl StateChannel {
 }
 pub mod close;
 pub mod crypto;
+pub mod delegation;
 pub mod dispute;
 pub mod epoch;
 pub mod multi_asset;
 pub mod nonce;
+
+pub use delegation::DelegationCertificate;
 
 /// HTLC parameters for cross-chain swaps.
 #[contracttype]

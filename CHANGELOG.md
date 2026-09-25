@@ -9,6 +9,11 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **`state-channel` (issue #461): ephemeral key delegation for mobile wallets.**
+  Adds `DelegationCertificate` allowing temporary Ed25519 signing keys to act on
+  behalf of master keys within a ledger sequence window. Supports both
+  channel-scoped and wildcard delegations, verified on-chain in
+  `update_state_delegated` and `close_channel_delegated`.
 - **`cross-chain` (issue #457): Wormhole VAA parsing and guardian verification.**
   Parses Wormhole VAA binary envelopes and verifies guardian secp256k1 signatures
   over double-keccak256 body digests via `env.crypto().secp256k1_recover`. Enforces
